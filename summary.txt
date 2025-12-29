@@ -1,0 +1,20 @@
+**Ohm's Law Formula Wheel: Key Points**
+
+* Ohm's Law formula: Voltage (V) = Current (I) x Resistance (R)
+* The formula wheel helps calculate voltage, current, or resistance easily
+* To use the wheel:
+  * Cover the value you want to calculate and read the remaining formula
+  * Current (I) = V/R
+  * Resistance (R) = V/I
+  * Voltage (V) = I x R
+
+**Applying the Formula Wheel to Other Equations**
+
+* The same concept can be applied to other formulas, such as Power (P) = V x I
+* Using the Power formula wheel:
+  * Voltage (V) = P/I
+  * Current (I) = P/V
+
+**Additional Resources**
+
+* Example problems on solving circuits with Ohm's Law and electrical power calculations are available in linked videos.
