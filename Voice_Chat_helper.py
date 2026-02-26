@@ -2,11 +2,10 @@ import os
 import time
 import sqlite3
 import speech_recognition as sr
-from transformers import pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
 from dotenv import load_dotenv
 from fpdf import FPDF
-import openai
+import google.generativeai as genai
 import tempfile
 from pydub import AudioSegment
 import io
@@ -14,34 +13,17 @@ import io
 # Load environment variables
 load_dotenv()
 
-# Set up custom LLaMA 3 API
-openai.api_key = os.getenv("E2E_API_KEY")
-openai.base_url = "https://infer.e2enetworks.net/project/p-5518/genai/llama_3_1_405b_instruct/v1/"
+# Configure Gemini
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
 
 def call_llm(prompt, context=""):
-    """Function to stream LLM response"""
+    """Function to call Gemini 2.5 Flash and return response"""
     try:
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
-        response = openai.chat.completions.create(
-            model='llama_3_1_405b_instruct',
-            messages=[
-                {"role": "user", "content": full_prompt}
-            ],
-            temperature=0.5,
-            max_tokens=1024,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=1,
-            stream=True
-        )
-        result = ""
-        for chunk in response:
-            if hasattr(chunk, 'choices') and chunk.choices:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    result += delta
-        return result.strip()
+        response = gemini_model.generate_content(full_prompt)
+        return response.text.strip() if response else "Error: No response received."
     except Exception as e:
         return f"Error generating response: {str(e)}"
 
@@ -51,7 +33,6 @@ def init_db():
     conn = sqlite3.connect("classroom_data.db")
     cursor = conn.cursor()
 
-    # Original tables
     cursor.execute('''CREATE TABLE IF NOT EXISTS keywords (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT,
@@ -72,18 +53,16 @@ def init_db():
                         FOREIGN KEY (transcript_id) REFERENCES transcripts (id)
                     )''')
 
-    # Check and add new columns if they don't exist
     try:
         cursor.execute("ALTER TABLE transcripts ADD COLUMN class_title TEXT DEFAULT ''")
     except sqlite3.OperationalError:
-        pass  # Column already exists
+        pass
 
     try:
         cursor.execute("ALTER TABLE processed_files ADD COLUMN class_title TEXT DEFAULT ''")
     except sqlite3.OperationalError:
-        pass  # Column already exists
+        pass
 
-    # New tables for chat functionality
     cursor.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         session_id TEXT UNIQUE,
@@ -155,14 +134,9 @@ def save_chat_message(session_id, message, response):
     cursor = conn.cursor()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Create session if doesn't exist
     cursor.execute("INSERT OR IGNORE INTO chat_sessions (session_id, created_at, last_active) VALUES (?, ?, ?)",
                    (session_id, timestamp, timestamp))
-
-    # Update last active
     cursor.execute("UPDATE chat_sessions SET last_active = ? WHERE session_id = ?", (timestamp, session_id))
-
-    # Save message
     cursor.execute("INSERT INTO chat_messages (session_id, message, response, timestamp) VALUES (?, ?, ?, ?)",
                    (session_id, message, response, timestamp))
 
@@ -225,29 +199,19 @@ def save_pdf(content, filename):
     pdf.add_page()
     pdf.set_font("Arial", size=12)
 
-    # Handle content encoding properly
     lines = content.split('\n')
     for line in lines:
         try:
-            # Clean the line and handle encoding issues
             clean_line = line.strip()
             if not clean_line:
-                pdf.ln(5)  # Add line break for empty lines
+                pdf.ln(5)
                 continue
-
-            # Try to encode to latin-1, replace problematic characters
             try:
-                # First try direct encoding
                 encoded_line = clean_line.encode('latin-1').decode('latin-1')
             except UnicodeEncodeError:
-                # If that fails, replace problematic characters
                 encoded_line = clean_line.encode('latin-1', errors='replace').decode('latin-1')
-
-            # Add the line to PDF
             pdf.multi_cell(0, 10, encoded_line)
-
         except Exception as e:
-            # If all else fails, skip the line but log it
             print(f"Skipping line due to encoding error: {str(e)}")
             continue
 
@@ -259,28 +223,20 @@ def save_pdf(content, filename):
         raise
 
 
-# Alternative improved version using UTF-8 support
 def save_pdf_utf8(content, filename):
     """Save content as PDF file with UTF-8 support"""
-    from fpdf import FPDF
-
     class UTF8PDF(FPDF):
-        def header(self):
-            pass
-
-        def footer(self):
-            pass
+        def header(self): pass
+        def footer(self): pass
 
     pdf = UTF8PDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    # Try to add a UTF-8 compatible font
     try:
         pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
         pdf.set_font('DejaVu', size=12)
     except:
-        # Fallback to Arial
         pdf.set_font("Arial", size=12)
 
     lines = content.split('\n')
@@ -290,16 +246,11 @@ def save_pdf_utf8(content, filename):
             if not clean_line:
                 pdf.ln(5)
                 continue
-
-            # For UTF-8 support, try to handle the text properly
             if hasattr(pdf, 'add_font') and 'DejaVu' in str(pdf.fonts):
-                # Use UTF-8 text directly
                 pdf.multi_cell(0, 10, clean_line)
             else:
-                # Fall back to latin-1 encoding
                 encoded_line = clean_line.encode('latin-1', errors='replace').decode('latin-1')
                 pdf.multi_cell(0, 10, encoded_line)
-
         except Exception as e:
             print(f"Error processing line: {str(e)}")
             continue
@@ -312,12 +263,10 @@ def save_pdf_utf8(content, filename):
         raise
 
 
-# Additional helper function for directory and permissions
 def ensure_output_directory(output_dir):
     """Ensure output directory exists with proper permissions"""
     try:
         os.makedirs(output_dir, exist_ok=True)
-        # Set permissions for Linux
         os.chmod(output_dir, 0o755)
         print(f"Output directory ready: {output_dir}")
     except Exception as e:
@@ -325,7 +274,6 @@ def ensure_output_directory(output_dir):
         raise
 
 
-# Debug version to help identify the issue
 def save_pdf_debug(content, filename):
     """Debug version of save_pdf to identify issues"""
     print(f"Creating PDF: {filename}")
@@ -347,14 +295,10 @@ def save_pdf_debug(content, filename):
             if not clean_line:
                 pdf.ln(5)
                 continue
-
             print(f"Processing line {i + 1}: {clean_line[:50]}...")
-
-            # Handle encoding
             encoded_line = clean_line.encode('latin-1', errors='replace').decode('latin-1')
             pdf.multi_cell(0, 10, encoded_line)
             processed_lines += 1
-
         except Exception as e:
             print(f"Error on line {i + 1}: {str(e)}")
             print(f"Problematic line: {repr(line)}")
@@ -365,16 +309,13 @@ def save_pdf_debug(content, filename):
     try:
         pdf.output(filename)
         print(f"PDF saved successfully: {filename}")
-
-        # Verify file was created and has content
         if os.path.exists(filename):
             file_size = os.path.getsize(filename)
             print(f"PDF file size: {file_size} bytes")
-            if file_size < 1000:  # Very small PDF might indicate issues
+            if file_size < 1000:
                 print("Warning: PDF file is very small, might be missing content")
         else:
             print("Error: PDF file was not created")
-
     except Exception as e:
         print(f"Error saving PDF: {str(e)}")
         raise
@@ -450,7 +391,6 @@ def search_classes(query):
 
     search_results = []
     for result in results:
-        # Find context around the search term
         content = result[2].lower()
         query_pos = content.find(query)
         if query_pos != -1:
@@ -476,15 +416,12 @@ def get_system_stats():
     conn = sqlite3.connect("classroom_data.db")
     cursor = conn.cursor()
 
-    # Get total classes
     cursor.execute("SELECT COUNT(*) FROM processed_files")
     total_classes = cursor.fetchone()[0]
 
-    # Get total chat messages
     cursor.execute("SELECT COUNT(*) FROM chat_messages")
     total_messages = cursor.fetchone()[0]
 
-    # Get recent activity
     cursor.execute("SELECT COUNT(*) FROM processed_files WHERE timestamp > date('now', '-7 days')")
     recent_classes = cursor.fetchone()[0]
 
@@ -501,33 +438,26 @@ def get_system_stats():
 def process_audio_file(audio_file, class_title=""):
     """Main function to process audio file and generate content"""
     try:
-        # Save uploaded file temporarily
         temp_dir = tempfile.mkdtemp()
         temp_file_path = os.path.join(temp_dir, audio_file.filename)
         audio_file.save(temp_file_path)
 
-        # Transcribe audio
         transcript = transcribe_audio(temp_file_path)
 
         if len(transcript.strip().split()) < 5:
             raise Exception('Not enough content to analyze')
 
-        # Extract keywords
         keywords = extract_keywords(transcript)
 
-        # Save to database
         save_keywords_to_db(keywords)
         transcript_id = save_transcript_to_db(transcript, class_title)
 
-        # Generate notes and quiz
         notes = generate_notes(transcript)
         quiz = generate_quiz(transcript)
 
-        # Create output directory if it doesn't exist
         output_dir = "output_files"
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save as PDF files
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         safe_title = "".join(c for c in class_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
 
@@ -537,10 +467,8 @@ def process_audio_file(audio_file, class_title=""):
         save_pdf(f"Class Notes: {class_title}\n\n{notes}", notes_filename)
         save_pdf(f"Quiz: {class_title}\n\n{quiz}", quiz_filename)
 
-        # Save processed file info
         save_processed_file_info(audio_file.filename, transcript_id, notes_filename, quiz_filename, class_title)
 
-        # Clean up temp file
         os.remove(temp_file_path)
         os.rmdir(temp_dir)
 
@@ -558,7 +486,6 @@ def process_audio_file(audio_file, class_title=""):
         }
 
     except Exception as e:
-        # Clean up temp files in case of error
         if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
         if 'temp_dir' in locals() and os.path.exists(temp_dir):
@@ -567,11 +494,9 @@ def process_audio_file(audio_file, class_title=""):
 
 
 def generate_chat_response(message, session_id):
-    """Generate chat response using LLM with class context"""
-    # Get all transcripts for context
+    """Generate chat response using Gemini 2.5 Flash with class context"""
     transcripts = get_all_transcripts()
 
-    # Build context from all class transcripts
     context = "You are a helpful academic assistant. You have access to the following class transcripts:\n\n"
     for i, (content, title, timestamp) in enumerate(transcripts):
         context += f"Class {i + 1}: {title} (Date: {timestamp})\n"
@@ -581,17 +506,14 @@ def generate_chat_response(message, session_id):
 Based on the above class content, please answer the student's question. If the question is about something not covered in class, mention that and still provide helpful information. Be educational and encouraging.
 """
 
-    # Get chat history for better context
     chat_history = get_chat_history(session_id)
     if chat_history:
         context += "\n\nPrevious conversation:\n"
-        for msg, resp, _ in chat_history[-3:]:  # Last 3 exchanges
+        for msg, resp, _ in chat_history[-3:]:
             context += f"Student: {msg}\nAssistant: {resp}\n"
 
-    # Generate response
     response = call_llm(f"Student question: {message}", context)
 
-    # Save chat message
     save_chat_message(session_id, message, response)
 
     return response
